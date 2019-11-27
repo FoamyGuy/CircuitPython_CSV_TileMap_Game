@@ -1,0 +1,8 @@
+top_left_wall,top_wall,top_wall,top_right_wall,floor,floor,top_left_wall,top_wall,top_wall,top_right_wall
+left_wall,floor,floor,floor,top_wall,top_wall,floor,heart,floor,right_wall
+left_wall,floor,floor,floor,floor,floor,floor,floor,floor,right_wall
+left_wall,floor,floor,floor,floor,floor,floor,floor,floor,right_wall
+left_wall,floor,floor,floor,floor,floor,floor,floor,floor,right_wall
+left_wall,floor,heart,floor,floor,floor,floor,robot,floor,right_wall
+left_wall,floor,floor,floor,floor,floor,heart,floor,floor,right_wall
+bottom_left_wall,bottom_wall,bottom_wall,bottom_wall,bottom_wall,bottom_wall,bottom_wall,bottom_wall,bottom_wall,bottom_right_wall
