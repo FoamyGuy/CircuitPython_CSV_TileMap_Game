@@ -182,7 +182,7 @@ group = displayio.Group()
 group.append(castle_group)
 group.append(sprite_group)
 
-f = open("map.csv", 'r')
+f = open("map_basic_world_state.csv", 'r')
 map_csv_str = f.read()
 f.close()
 
