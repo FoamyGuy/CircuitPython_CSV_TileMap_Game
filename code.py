@@ -3,15 +3,126 @@ import displayio
 import adafruit_imageload
 from displayio import Palette
 from adafruit_pybadger import PyBadger
+import time
 
+# Direction constants for comparison
 UP = 0
 DOWN = 1
 RIGHT = 2
 LEFT = 3
 
-MAP = {}
- 
+# how long to wait between rendering frames
+FPS_DELAY = 1/30
+
+# how many tiles can fit on thes screen. Tiles are 16x16
+SCREEN_HEIGHT_TILES = 8
+SCREEN_WIDTH_TILES = 10
+
+# hold the map state as it came out of the csv. Only holds non-entities.
+ORIGINAL_MAP = {}
+
+# hold the current map state if/when it changes. Only holds non-entities.
+CURRENT_MAP = {}
+
+# dictionary with tuple keys that map to tile type values
+# e.x. {(0,0): "left_wall", (1,1): "floor"}
+CAMERA_VIEW = {}
+
+# how far offset the camera is from the CURRENT_MAP
+# used to determine where things are at in the camera view vs. the MAP
+CAMERA_OFFSET_X = 0
+CAMERA_OFFSET_Y = 0
+
+# list of sprite objects, one for each entity
+ENTITY_SPRITES = []
+
+# Dictionary with touple keys that map to lists of entity objects.
+# Each one has the index of the sprite in the ENTITY_SPRITES list
+# and the tile type string
+ENTITY_SPRITES_DICT = {}
+
+# list of entities that need to be on the screen currently based on the camera view
+NEED_TO_DRAW_ENTITIES = []
+
+# hold the location of the player in tile coordinates
+PLAYER_LOC = (0,0)
+
+# return from CURRENT_MAP the tile name of the tile of the given coords
+def get_tile(coords):
+    return CURRENT_MAP[coords[0], coords[1]]
+
+# return from TILES dict the tile object with stats and behavior for the tile at the given coords.
+def get_tile_obj(coords):
+    return TILES[CURRENT_MAP[coords[0], coords[1]]]
+
+# check the can_walk property of the tile at the given coordinates
+def is_tile_moveable(tile_coords):
+    return TILES[CURRENT_MAP[tile_coords[0], tile_coords[1]]]['can_walk']
+
+# behavior function that allows the player to push the entity
+def allow_push(to_coords, from_coords, entity_obj):
+    push_x_offset = 0
+    push_y_offset = 0
+    print("inside allow push")
+    print("%s -> %s" % (from_coords, to_coords))
+    if to_coords[0] < from_coords[0]:
+        # moving left
+        push_x_offset = -1
+        push_y_offset = 0
+        
+    elif to_coords[0] > from_coords[0]:
+        # moving right
+        push_x_offset = 1
+        push_y_offset = 0
+        
+    elif to_coords[1] < from_coords[1]:
+        # moving up
+        push_x_offset = 0
+        push_y_offset = -1
+        
+    elif to_coords[1] > from_coords[1]:
+        # moving down
+        push_x_offset = 0
+        push_y_offset = 1
+    
+    # coords where we will be pushing the entity to
+    push_to_tile_coords = (to_coords[0]+ push_x_offset, to_coords[1]+ push_y_offset)
+    
+    # check if the entity is allowed to move to there
+    if is_tile_moveable(push_to_tile_coords):
+        #print("dict before %s" % ENTITY_SPRITES_DICT)
+        
+        # check if there are etity(s) at the tile we are trying to push to.
+        if push_to_tile_coords in ENTITY_SPRITES_DICT:
+            # append the thing we are pushing to the the list at the new coordinates in the dictionary
+            ENTITY_SPRITES_DICT[push_to_tile_coords].append(entity_obj)
+        else:
+            # create a list with the thing we are pushing and store it in the dictionary
+            ENTITY_SPRITES_DICT[push_to_tile_coords] = [entity_obj]
+        
+        # remove the thing we are pushing from it's old location
+        ENTITY_SPRITES_DICT[to_coords].remove(entity_obj)
+        
+        # if there are no entities left in the old location
+        if len(ENTITY_SPRITES_DICT[to_coords]) == 0:
+            # delete the empty lyst
+            del ENTITY_SPRITES_DICT[to_coords]
+        #print("dict after %s" % ENTITY_SPRITES_DICT)
+        
+        # return true to allow player to move
+        return True
+    # if we return false player won't be able to move
+    return False
+
+# main dictionary that maps tile type strings to objects.
+# each one stores the sprite_sheet index and any necessary
+# behavioral stats like can_walk or before_move 
 TILES = {
+    # empty strings default to floor and no walk.
+    "": {
+        "sprite_index": 7,
+        "can_walk": False
+    },
     "floor": {
         "sprite_index": 7,
         "can_walk": True
@@ -50,41 +161,34 @@ TILES = {
     },
     "robot": {
         "sprite_index": 1,
-        "can_walk": False,
+        "can_walk": True,
         "entity": True,
+        "before_move": allow_push
     },
     "heart": {
         "sprite_index": 2,
         "can_walk": True,
         "entity": True,
+    },
+    "player": {
+        "sprite_index": 0,
+        "entity": True,
     }
-    
-    
 }
 
 # Badger object for easy button handling
 badger = PyBadger()
 
+# display object variable
 display = board.DISPLAY
 
 # Load the sprite sheet (bitmap)
 sprite_sheet, palette = adafruit_imageload.load("/castle_sprite_sheet.bmp",
                                                 bitmap=displayio.Bitmap,
                                                 palette=displayio.Palette)
-
-#print(palette[0])
-#palette[0] = 0xFFFFFF
+                                                
+# make bright pink be transparent so entities can be drawn on top of map tiles
 palette.make_transparent(5)
-
-entity_sprites = []
-
-# Create the sprite TileGrid
-sprite = displayio.TileGrid(sprite_sheet, pixel_shader=palette,
-                            width = 1,
-                            height = 1,
-                            tile_width = 16,
-                            tile_height = 16,
-                            default_tile = 0)
 
 # Create the castle TileGrid
 castle = displayio.TileGrid(sprite_sheet, pixel_shader=palette,
@@ -93,9 +197,8 @@ castle = displayio.TileGrid(sprite_sheet, pixel_shader=palette,
                             tile_width = 16,
                             tile_height = 16)
 
-# Create a Group to hold the sprite and add it
+# Create a Group to hold the sprites and add it
 sprite_group = displayio.Group(max_size=48)
-sprite_group.append(sprite)
 
 # Create a Group to hold the castle and add it
 castle_group = displayio.Group()
@@ -108,106 +211,314 @@ group = displayio.Group()
 group.append(castle_group)
 group.append(sprite_group)
 
+# Open and read raw string from the map csv file
 f = open("map.csv", 'r')
 map_csv_str = f.read()
 f.close()
 
+# split the raw string into lines
 map_csv_lines = map_csv_str.replace("\r", "").split("\n")
 
-print(TILES.keys())
+# set the WIDTH and HEIGHT variables.
+# this assumes the map is rectangular.
+MAP_HEIGHT = len(map_csv_lines)
+MAP_WIDTH = len(map_csv_lines[0].split(","))
 
-print("===")
+#print(TILES.keys())
+#print(map_csv_lines)
 
-print(map_csv_lines)
+# loop over each line storing index in y variable
 for y, line in enumerate(map_csv_lines):
+    # ignore empty line
     if line != "":
-        print(line)
+        # loop over each tile type separated by commas, storing index in x variable
         for x, tile_name in enumerate(line.split(",")):
-            MAP[x,y] = tile_name
-            
             print("%s '%s'" % (len(tile_name), str(tile_name)))
+            
+            # if the tile exists in our main dictionary
             if tile_name in TILES.keys():
-                castle[x, y] = TILES[tile_name]['sprite_index']
-                if 'entity' in TILES[tile_name].keys() and TILES[tile_name]['entity']:
-                    entity_srite = displayio.TileGrid(sprite_sheet, pixel_shader=palette,
-                                width = 1,
-                                height = 1,
-                                tile_width = 16,
-                                tile_height = 16,
-                                default_tile = TILES[tile_name]['sprite_index'])
-                    entity_srite.x = x*16
-                    entity_srite.y = y*16
-                    entity_sprites.append(entity_srite)
-                    castle[x, y] = TILES['floor']['sprite_index']
-                else:
-                    castle[x, y] = TILES[tile_name]['sprite_index']
-            else:
-                print("tile: %s not found in TILES dict" % tile_name)
                 
+                # if the tile is an entity
+                if 'entity' in TILES[tile_name].keys() and TILES[tile_name]['entity']:
+                    # set the map tiles to floor
+                    ORIGINAL_MAP[x,y] = "floor"
+                    CURRENT_MAP[x,y] = "floor"
+                    
+                    # if it's the player
+                    if tile_name == "player":
+                        # Create the sprite TileGrid
+                        sprite = displayio.TileGrid(sprite_sheet, pixel_shader=palette,
+                            width = 1,
+                            height = 1,
+                            tile_width = 16,
+                            tile_height = 16,
+                            default_tile = TILES[tile_name]['sprite_index'])
+                            
+                        # set the position of sprite on screen
+                        sprite.x = x*16
+                        sprite.y = y*16
+                        
+                        # set position in x,y tile coords for reference later
+                        PLAYER_LOC = (x,y)
+                        
+                        # add sprite to the group
+                        sprite_group.append(sprite)
+                    else: # not the player
+                        # Create the sprite TileGrid
+                        entity_srite = displayio.TileGrid(sprite_sheet, pixel_shader=palette,
+                                    width = 1,
+                                    height = 1,
+                                    tile_width = 16,
+                                    tile_height = 16,
+                                    default_tile = TILES[tile_name]['sprite_index'])
+                        # set the position of sprite on screen
+                        # default to offscreen
+                        entity_srite.x = -16
+                        entity_srite.y = -16
+                        
+                        # add the sprite object to ENTITY_SPRITES list
+                        ENTITY_SPRITES.append(entity_srite)
+                        #print("setting entity_sprites_dict[%s,%s]" % (x,y))
+                        
+                        # create an entity obj
+                        entity_obj = {
+                            "entity_sprite_index": len(ENTITY_SPRITES) - 1,
+                            "map_tile_name": tile_name
+                        }
+                        
+                        # if there are no entities at this location yet
+                        if (x,y) not in ENTITY_SPRITES_DICT:
+                            # create a list and add it to the dictionary at the x,y location
+                            ENTITY_SPRITES_DICT[x, y] = [entity_obj]
+                        else:
+                            # append the entity to the existing list in the dictionary
+                            ENTITY_SPRITES_DICT[x, y].append(entity_obj)
+                            
+                else: # tile is not entity
+                    # set the tile_name into MAP dictionaries
+                    ORIGINAL_MAP[x, y] = tile_name
+                    CURRENT_MAP[x, y] = tile_name
+                    
+            else: # tile type wasn't found in dict
+                print("tile: %s not found in TILES dict" % tile_name)
 
-
-
-# put the sprite somewhere in the castle
-sprite.x = 16*3
-sprite.y = 16*2
-
-
-for entity in entity_sprites:
+# add all entity sprites to the group
+for entity in ENTITY_SPRITES:
     sprite_group.append(entity)
-    
+
 # Add the Group to the Display
 display.show(group)
 
+# variables to store previous value of button state 
 prev_up = False
 prev_down = False
 prev_left = False
 prev_right = False
 
+# helper function returns true if player is allowed to move given direction
+# based on can_walk property of the tiles next to the player
 def can_player_move(direction):
     if direction == UP:
-        player_map_coords = [sprite.x/16, sprite.y/16]
-        tile_above_coords = [player_map_coords[0], player_map_coords[1] - 1]
-        return TILES[MAP[tile_above_coords[0], tile_above_coords[1]]]['can_walk']
-        
-    if direction == DOWN:
-        player_map_coords = [sprite.x/16, sprite.y/16]
-        tile_below_coords = [player_map_coords[0], player_map_coords[1] + 1]
-        return TILES[MAP[tile_below_coords[0], tile_below_coords[1]]]['can_walk']
-        
-    if direction == LEFT:
-        player_map_coords = [sprite.x/16, sprite.y/16]
-        tile_left_of_coords = [player_map_coords[0]-1, player_map_coords[1]]
-        return TILES[MAP[tile_left_of_coords[0], tile_left_of_coords[1]]]['can_walk']
-        
-    if direction == RIGHT:
-        player_map_coords = [sprite.x/16, sprite.y/16]
-        tile_right_of_coords = [player_map_coords[0] + 1, player_map_coords[1]]
-        return TILES[MAP[tile_right_of_coords[0], tile_right_of_coords[1]]]['can_walk']
+        tile_above_coords = (PLAYER_LOC[0], PLAYER_LOC[1] - 1)
+        return TILES[CURRENT_MAP[tile_above_coords[0], tile_above_coords[1]]]['can_walk']
 
+    if direction == DOWN:
+        tile_below_coords = (PLAYER_LOC[0], PLAYER_LOC[1] + 1)
+        return TILES[CURRENT_MAP[tile_below_coords[0], tile_below_coords[1]]]['can_walk']
+
+    if direction == LEFT:
+        tile_left_of_coords = (PLAYER_LOC[0]-1, PLAYER_LOC[1])
+        return TILES[CURRENT_MAP[tile_left_of_coords[0], tile_left_of_coords[1]]]['can_walk']
+
+    if direction == RIGHT:
+        tile_right_of_coords = (PLAYER_LOC[0] + 1, PLAYER_LOC[1])
+        return TILES[CURRENT_MAP[tile_right_of_coords[0], tile_right_of_coords[1]]]['can_walk']
+
+# set the appropriate tiles into the CAMERA_VIEW dictionary
+# based on given starting coords and size
+def set_camera_view(startX, startY, width, height):
+    global CAMERA_OFFSET_X
+    global CAMERA_OFFSET_Y
+    # set the offset variables for use in other parts of the code
+    CAMERA_OFFSET_X = startX
+    CAMERA_OFFSET_Y = startY
+    
+    # loop over the rows and indexes in the desired size section
+    for y_index, y in enumerate(range(startY, startY+height)):
+        # loop over columns and indexes in the desired size section
+        for x_index, x in enumerate(range(startX, startX+width)):
+            #print("setting camera_view[%s,%s]" % (x_index,y_index))
+            try:
+                # set the tile at the current coordinate of the MAP into the CAMERA_VIEW
+                CAMERA_VIEW[x_index,y_index] = CURRENT_MAP[x,y]
+            except KeyError:
+                # if coordinate is out of bounds set it to floor by default
+                CAMERA_VIEW[x_index,y_index] = "floor"
+
+# draw the current CAMERA_VIEW dictionary and the ENTITY_SPRITES_DICT
+def draw_camera_view():
+    # list that will hold all entities that have been drawn based on their MAP location
+    # any entities not in this list should get moved off the screen
+    drew_entities = []
+    #print(CAMERA_VIEW)
+    
+    # loop over y tile coordinates
+    for y in range(0, SCREEN_HEIGHT_TILES):
+        # loop over x tile coordinates
+        for x in range(0, SCREEN_WIDTH_TILES):
+            # tile name at this location
+            tile_name = CAMERA_VIEW[x,y]
+            
+            # if tile exists in the main dictionary
+            if tile_name in TILES.keys():
+                # if there are entity(s) at this location
+                if (x + CAMERA_OFFSET_X, y + CAMERA_OFFSET_Y) in ENTITY_SPRITES_DICT:
+                    # default background for entities is floor
+                    castle[x, y] = TILES["floor"]['sprite_index']
+                    
+                    # if it's not the player
+                    if tile_name != "player":
+                        # loop over all entities at this location
+                        for entity_obj_at_tile in ENTITY_SPRITES_DICT[x + CAMERA_OFFSET_X, y + CAMERA_OFFSET_Y]:
+                            # set appropriate x,y screen coordinates based on tile coordinates
+                            ENTITY_SPRITES[int(entity_obj_at_tile["entity_sprite_index"])].x = x * 16
+                            ENTITY_SPRITES[int(entity_obj_at_tile["entity_sprite_index"])].y = y * 16
+                            
+                            # add the index of the entity sprite to the drew_entities list so we know not to hide it later.
+                            drew_entities.append(entity_obj_at_tile["entity_sprite_index"])
+                            
+                else: # no entities at this location
+                    # set the sprite index of this tile into the CASTLE dictionary
+                    castle[x, y] = TILES[tile_name]['sprite_index']
+                    
+            else: # tile type not found in main dictionary
+                # default to floor tile
+                castle[x, y] = TILES["floor"]['sprite_index']
+
+            # if the player is at this x,y tile coordinate accounting for camera offset
+            if PLAYER_LOC == ((x + CAMERA_OFFSET_X, y + CAMERA_OFFSET_Y)):
+                # set player sprite screen coordinates
+                sprite.x = x*16
+                sprite.y = y*16
+    
+    # loop over all entity sprites
+    for index in range(0, len(ENTITY_SPRITES)):
+        # if the sprite wasn't drawn then it's outside the camera view
+        if index not in drew_entities:
+            # hide the sprite by moving it off screen
+            ENTITY_SPRITES[index].x = int(-16)
+            ENTITY_SPRITES[index].y = int(-16)
+
+# variable to store timestamp of last drawn frame
+last_update_time = 0
+
+# variables to store movement offset values
+x_offset = 0
+y_offset = 0
+
+# main loop
 while True:
-    #badger.auto_dim_display(delay=10)
+    # auto dim the screen
+    badger.auto_dim_display(delay=10)
+    
+    # set the current button values into variables
     cur_up = badger.button.up
     cur_down = badger.button.down
     cur_right = badger.button.right
     cur_left = badger.button.left
-    
+
+    # check for up button press / release
     if not cur_up and prev_up:
         if can_player_move(UP):
-            sprite.y -= 16*1
-        
+            x_offset = 0
+            y_offset = - 1
+
+    # check for down button press / release
     if not cur_down and prev_down:
         if can_player_move(DOWN):
-            sprite.y += 16*1
-        
+            x_offset = 0
+            y_offset = 1
+            
+    # check for right button press / release
     if not cur_right and prev_right:
         if can_player_move(RIGHT):
-            sprite.x += 16*1
-        
+            x_offset = 1
+            y_offset = 0
+
+    # check for left button press / release
     if not cur_left and prev_left:
         if can_player_move(LEFT):
-            sprite.x -= 16*1
+            print("can_move left")
+            x_offset = -1
+            y_offset = 0
+
+    # if any offset is not zero then we need to process player movement
+    if x_offset != 0 or y_offset != 0:
+        # variable to store if player is allowed to move
+        can_move = False
+        
+        # coordinates the player is moving to
+        moving_to_coords = (PLAYER_LOC[0] + x_offset, PLAYER_LOC[1] + y_offset)
+        
+        # tile name of the spot player is moving to
+        moving_to_tile_name = CURRENT_MAP[moving_to_coords[0], moving_to_coords[1]]
+        
+        # if there are entity(s) at spot the player is moving to
+        if moving_to_coords in ENTITY_SPRITES_DICT:
+            print("found entity(s) where we are moving to")
+            
+            # loop over all entities at the location player is moving to
+            for entity_obj in ENTITY_SPRITES_DICT[moving_to_coords]:
+                print("checking entity %s" % entity_obj["map_tile_name"])
+                
+                # if the entity has a before_move behavior function
+                if "before_move" in TILES[entity_obj["map_tile_name"]].keys():
+                    print("calling before_move %s, %s, %s" % (moving_to_coords,PLAYER_LOC,entity_obj))
+                    
+                    # call the before_move behavior function act upon it's result
+                    if TILES[entity_obj["map_tile_name"]]['before_move'](moving_to_coords,PLAYER_LOC,entity_obj):
+                        # all the movement if it returned true
+                        can_move = True
+                    else:
+                        # break and don't allow movement if it returned false
+                        break;
+                else: # entity does not have a before_move function
+                    # allow movement
+                    can_move = True
+            if can_move:
+                # set the player loc variable to the new coords
+                PLAYER_LOC = moving_to_coords
+                
+        else: # no entities at the location player is moving to
+            # set player loc variable to new coords
+            PLAYER_LOC = moving_to_coords
     
+    # reset movement offset variables
+    y_offset = 0
+    x_offset = 0
+    
+    # set previos button values for next iteration
     prev_up = cur_up
     prev_down = cur_down
     prev_right = cur_right
     prev_left = cur_left
+    
+    # current time
+    now = time.monotonic()
+    
+    # if it has been long enough based on FPS delay
+    if now > last_update_time + FPS_DELAY:
+        
+        # if player is past x tile coordinate 4
+        if PLAYER_LOC[0] > 4:
+            # set camera to player location offset by 4
+            set_camera_view(int(PLAYER_LOC[0]-4),0,10,8)
+        else:
+            # set camera to 0,0
+            set_camera_view(0,0,10,8)
+
+        # draw the camera
+        draw_camera_view()
+        
+        # store the last update time
+        last_update_time = now
